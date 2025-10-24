@@ -1,77 +1,76 @@
-
-#!/usr/bin/python
-# script to scrape tsp fund prices from tsp.gov
-# adapted from Python 2 script created by user Simbilis on Bogleheads.org
-# https://www.bogleheads.org/forum/viewtopic.php?f=1&t=108388
+#!/usr/bin/python3
+# Script to scrape TSP fund prices from tsp.gov and reformat for Ghostfolio import
 
 import requests
 import csv
-from datetime import datetime, timedelta, date
 import sys
+import os
 
-fundTag = {
-    'Linc'  : 'TSPLINCOME',
-    'L2025' : 'TSPL2025',
-    'L2030' : 'TSPL2030',
-    'L2035' : 'TSPL2035',
-    'L2040' : 'TSPL2040',
-    'L2045' : 'TSPL2045',
-    'L2050' : 'TSPL2050',
-    'L2055' : 'TSPL2055',
-    'L2060' : 'TSPL2060',
-    'L2065' : 'TSPL2065',
-    'G'     : 'TSPGFUND',
-    'F'     : 'TSPFFUND',
-    'C'     : 'TSPCFUND',
-    'S'     : 'TSPSFUND',
-    'I'     : 'TSPIFUND'}
+# Map TSP CSV headers to Ghostfolio symbols
+fund_map = {
+    "L Income": "TSP_LINC",
+    "L 2030": "TSP_L2030",
+    "L 2035": "TSP_L2035",
+    "L 2040": "TSP_L2040",
+    "L 2045": "TSP_L2045",
+    "L 2050": "TSP_L2050",
+    "L 2055": "TSP_L2055",
+    "L 2060": "TSP_L2060",
+    "L 2065": "TSP_L2065",
+    "L 2070": "TSP_L2070",
+    "L 2075": "TSP_L2075",
+    "G Fund": "TSP_G",
+    "F Fund": "TSP_F",
+    "C Fund": "TSP_C",
+    "S Fund": "TSP_S",
+    "I Fund": "TSP_I",
+}
 
-priceHistoryFile = 'tspQuicken.csv'
+outputDir = "tsp_prices"
+os.makedirs(outputDir, exist_ok=True)
 
-lastDate = ''
-try:
-    quickenReader = csv.reader(open(priceHistoryFile, 'r'))
-    lastDate = [row for row in quickenReader][-1][2]
-except:
-    lastDate = '06/01/2003'
-startDate = (datetime.strptime(lastDate, '%m/%d/%Y') + timedelta(1)).strftime('%Y%m%d')
-endDate = date.today().strftime('%m/%d/%Y')
-if lastDate == endDate:
-    print('already have prices through', endDate)
-    sys.exit()
+# Download the official CSV from TSP
+url = "https://www.tsp.gov/data/fund-price-history.csv"
+headers = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/102.0.0.0 Safari/537.36"
+}
+resp = requests.get(url, headers=headers)
+if resp.status_code != 200:
+    print("❌ Failed to fetch TSP data:", resp.status_code)
+    sys.exit(1)
 
-print('checking for new prices starting on', startDate)
-tspSharePricePageUrl = 'https://secure.tsp.gov/components/CORS/getSharePrices.html'
-fundStrings = ['{}=1'.format(fund) for fund in fundTag.keys()]
-dateStrings = ['startdate={}'.format(startDate),
-               'enddate={}'.format(date.today().strftime('%Y%m%d')),
-               'format=CSV', 'download=1']
-restString = '?' +  '&'.join(dateStrings + fundStrings)
+reader = csv.DictReader(resp.text.splitlines())
 
-page = requests.get(tspSharePricePageUrl+restString)
+# Prepare file handles for each fund
+writers = {}
+files = {}
+for col, symbol in fund_map.items():
+    fpath = os.path.join(outputDir, f"{symbol}.csv")
+    f = open(fpath, "w", newline="")
+    writer = csv.writer(f, delimiter=";")
+    writer.writerow(["date", "marketPrice"])
+    writers[col] = writer
+    files[col] = f
 
-reader = csv.reader(page.text.splitlines(), delimiter=',')
-rows = [row for row in reader if len(row) > 0]
-tagRow = rows[0]
-foundNew = False
+# Process rows
+for row in reader:
+    if not row["Date"]:
+        continue
+    
+    dt = row["Date"].strip()
 
-newRows = []
-for row in rows[:0:-1]:
-    currDate = datetime.strptime(row[0], '%Y-%m-%d').strftime('%m/%d/%Y')
-    for i in range(1, len(row)):
-        tag = tagRow[i].lstrip()
-        if tag in fundTag:
-            try:
-                price = float(row[i])
-            except:
-                continue
-            newRows.append([fundTag[tag], price, currDate])
-            foundNew = True
-            print('found', [fundTag[tag], price, currDate])
+    for col, symbol in fund_map.items():
+        price_str = row.get(col, "").strip()
+        if not price_str:
+            continue
+        try:
+            price = float(price_str)
+        except ValueError:
+            continue
+        writers[col].writerow([dt, price])
 
-if foundNew:
-    with open(priceHistoryFile, "a", newline='') as file:
-        writer = csv.writer(file)
-        writer.writerows(newRows)
+# Close all files
+for f in files.values():
+    f.close()
 
-sys.exit()
+print(f"✅ Wrote one CSV per fund into {outputDir}/")
